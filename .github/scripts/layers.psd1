@@ -16,7 +16,7 @@
 
 @{
     # base 必须第一：它的解包器是后续包的前提
-    Order = @('base', 'codeql', 'python', 'agent', 'dev', 'pentest', 're', 'apps', 'apps-plus')
+    Order = @('base', 'codeql', 'jvm', 'dotnet', 'python', 'agent', 'dev', 'pentest', 're', 'apps', 'apps-plus')
 
     Layers = @{
         base = @{
@@ -40,6 +40,23 @@
             )
             # 4 个 JDK 都写 env_set JAVA_HOME，不定序的话结果由 scoop reset * 的字典序决定
             Pin = @('liberica17-full-jdk')
+        }
+
+        jvm = @{
+            Title = 'JDK 运行时'
+            # 给 IDE / apktool / jadx 这类「PATH 上有个 java 就行」的工具用。
+            # codeql 层的 8/11/17/27 是给代码扫描的版本矩阵，用途不同，不并进来。
+            Required = @('liberica21-full-jdk')
+            # 和 codeql 层叠加时两个层都写 JAVA_HOME，定序避免结果依赖字典序
+            Pin = @('liberica21-full-jdk')
+        }
+
+        dotnet = @{
+            Title = '.NET 运行时'
+            # 用 SDK 而不是 versions/windowsdesktop-runtime-*：后者是 MSI，装完写
+            # Program Files，安装器不留档（无 bin 声明），归档里只剩假记录。
+            # SDK 是可移植 zip，且 Windows 版自带 Microsoft.WindowsDesktop.App。
+            Required = @('dotnet-sdk-lts')
         }
 
         python = @{
@@ -75,14 +92,14 @@
                 'go',
                 # ruby 的原生扩展要 msys2
                 'msys2', 'ruby',
-                'dotnet-sdk-lts', 'dotnet3-sdk', 'nuget',
+                # .NET SDK 由 dotnet 层提供
+                'dotnet3-sdk', 'nuget',
                 'yarn', 'git-lfs', 'hadolint', 'shellcheck', 'lefthook',
                 'chromedriver', 'chsrc', 'colortool',
                 'kubectl', 'etcd',
-                # IDE 带的 JDK。不用 liberica16（非 LTS，2021-09 就被 17 取代）
-                'liberica21-full-jdk', 'extras/idea', 'extras/sublime-text'
+                # IDE 要的 JDK 由 jvm 层提供
+                'extras/idea', 'extras/sublime-text'
             )
-            Pin = @('liberica21-full-jdk')
         }
 
         pentest = @{
@@ -104,10 +121,10 @@
         re = @{
             Title = '逆向工程与样本取证'
             Required = @(
-                # 不放 ghidra：它的 manifest 自己 suggest JDK，而本层不带 JDK，装了起不来。
-                # 要 Ghidra 就把 re 和 dev（带 liberica21）叠加还原。
+                # apktool / jadx 要的 java 由 jvm 层提供
                 'radare2', 'cutter', 'dnspy', 'ilspy',
                 'apktool', 'jadx',
+                # dnspy / ilspy 要的 .NET 运行时由 dotnet 层提供
                 'x64dbg', 'pe-bear', 'openark',
                 'yara', 'exiftool', 'upx', 'uniextract2'
             )
@@ -125,7 +142,11 @@
                 # nircmd 在 main 和 nirsoft 里都有（同一个二进制），带前缀保证确定性。
                 # nirsoft 版声明 bin（shim 落在 $SCOOP\shims）且有 persist，更适合归档
                 'nirsoft/nircmd', 'scoop-search', 'everything-cli',
-                'keepassxc', 'keepass-plugin-keepassrpc', 'gpg'
+                # 不放 keepass-plugin-keepassrpc：它是 KeePass 2.x 的插件，而这里装的是
+                # keepassxc（另一个产品，自带浏览器集成），插件用不上，还会让 scoop
+                # 顺着它的 depends 自动补装 keepass。要 KeePass+RPC 就把 keepassxc
+                # 换成 extras/keepass 并加回插件。
+                'keepassxc', 'gpg'
             )
         }
 
@@ -152,22 +173,21 @@
         @{ Name = 'nonportable'; Repo = 'https://github.com/ScoopInstaller/Nonportable' }
         @{ Name = 'nerd-fonts';  Repo = 'https://github.com/matthewjberger/scoop-nerd-fonts' }
         @{ Name = 'ktools';      Repo = 'https://github.com/kenyon-wong/ktools' }
-        # 只在 codeql / python 注册。但计划里没有任何包来自它（92 个 manifest 全是 R
-        # 相关），等于每次构建白克隆一次 —— 要么补上真正要用的 R 包，要么删掉这行
-        @{ Name = 'r-bucket';    Repo = 'https://github.com/cderv/r-bucket.git'
-           Variants = @('codeql', 'python') }
+        # 曾经为 codeql / python 注册 r-bucket，但计划里没有任何包来自它（92 个
+        # manifest 全是 R 相关），每次构建白克隆一次。要用 R 时再加回来。
     )
 
-    # 变体 → 层。每个变体都是 base + 一层。全家桶写 @('*') 会展开成 Order 全集，
-    # 但要记得同时把变体名加进 workflow 的 options（校验 job 会断言这件事）
+    # 变体 → 层。大多是 base + 一层；需要共用运行时的（dev / re 要 JDK）叠上 jvm。
+    # 全家桶写 @('*') 会展开成 Order 全集，但要记得同时把变体名加进 workflow 的
+    # options（校验 job 会断言这件事）
     Variants = @{
         'base'      = @('base')
         'codeql'    = @('base', 'codeql')
         'python'    = @('base', 'python')
         'agent'     = @('base', 'agent')
-        'dev'       = @('base', 'dev')
+        'dev'       = @('base', 'jvm', 'dotnet', 'dev')
         'pentest'   = @('base', 'pentest')
-        're'        = @('base', 're')
+        're'        = @('base', 'jvm', 'dotnet', 're')
         'apps'      = @('base', 'apps')
         'apps-plus' = @('base', 'apps-plus')
     }

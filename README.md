@@ -10,13 +10,15 @@
 | `codeql` | base + JDK×4 + CodeQL + Maven/Gradle + 规则仓库 |
 | `python` | base + Python 3.14 + uv + 常用库 |
 | `agent` | base + Node.js 24 + pnpm + bun + Claude Code / Codex / pi / opencode |
-| `dev` | base + MinGW / 语言运行时 / 包管理 / 容器 / IDE |
+| `dev` | base + JDK / .NET + MinGW / 语言运行时 / 包管理 / 容器 / IDE |
 | `pentest` | base + 信息收集 / 扫描 / 口令 / 凭据扫描 / Web 代理 |
-| `re` | base + 反汇编 / 调试 / PE 分析 / .NET 反编译 / 样本取证 |
+| `re` | base + JDK / .NET + 反汇编 / 调试 / PE 分析 / 反编译 / 样本取证 |
 | `apps` | base + 常用软件：终端与 Nerd 字体 / 浏览器 / 文档 / 影音 / 系统工具 / 密码管理 |
 | `apps-plus` | base + 增强软件：媒体处理 / 云存储 / 虚拟化 / 开发向桌面工具 |
 
-每个变体都是 **base + 一层**，互不重叠、可以叠加使用。需要哪一类就构建哪个，
+每个变体是 **base + 若干层**。大多数就是 base + 一层；`dev` / `re` 还会叠上共享的
+`jvm`（给 IDE / apktool / jadx 提供 java）和 `dotnet`（给 dnspy / ilspy 提供 .NET
+运行时）。层与层之间不重复装包，所以不同变体的归档可以叠加解压。需要哪一类就构建哪个，
 不必为了几个工具去构建一个「全家桶」。
 
 `base` 保持精简——只放所有变体都要用的东西（git / 7zip / aria2 / 解包器 /

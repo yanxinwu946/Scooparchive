@@ -116,8 +116,8 @@ function Test-BuildPlan {
             }
         }
         foreach ($s in @(Get-ManifestPackageRefs -Manifest $m -Field 'suggest')) {
-            if ($planNames -notcontains $s) {
-                $notes.Add("'$pkg'：manifest suggest '$s'，不在计划里（可选）")
+            if (-not (Test-PackageSuggestionSatisfied -Suggestion $s -PlannedNames $planNames)) {
+                $notes.Add("'$pkg'：manifest suggest '$s'，计划里没有能对上的包")
             }
         }
 
@@ -318,6 +318,48 @@ function Get-ManifestPackageRefs {
     foreach ($p in $value.PSObject.Properties) {
         if ($p.Name -notin @('64bit', '32bit', 'arm64')) { $p.Name }
     }
+}
+
+function Test-PackageSuggestionSatisfied {
+    <#
+    .SYNOPSIS
+        判断 manifest 的 suggest 值是否已被计划里的某个包满足。
+
+    .DESCRIPTION
+        suggest 的值常常是描述而不是包名（'JDK' / 'Node.js' / 'Everything'），
+        直接按名字比对会一路误报。这里放宽到：归一化后互为子串，或描述里的长词
+        出现在某个包名里。
+
+    .OUTPUTS
+        System.Boolean
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Suggestion,
+        [Parameter(Mandatory)][string[]]$PlannedNames
+    )
+
+    $normalize = { param($s) ($s -replace '[^a-zA-Z0-9]', '').ToLowerInvariant() }
+    $target = & $normalize $Suggestion
+    if (-not $target) { return $true }
+
+    $normalizedNames = @($PlannedNames | ForEach-Object { & $normalize $_ } | Where-Object { $_ })
+
+    foreach ($n in $normalizedNames) {
+        # 描述是包名的一部分（'jdk' ⊂ 'liberica21fulljdk'）—— 安全方向，不限长度
+        if ($n.Contains($target)) { return $true }
+        # 包名是描述的一部分（'vim' ⊂ 'vimtutor'）—— 限长度，否则短名会乱命中
+        if ($n.Length -ge 4 -and $target.Contains($n)) { return $true }
+    }
+
+    foreach ($token in @($Suggestion -split '[^a-zA-Z0-9]+' | Where-Object { $_.Length -ge 4 })) {
+        $t = $token.ToLowerInvariant()
+        foreach ($n in $normalizedNames) {
+            if ($n.Contains($t)) { return $true }
+        }
+    }
+
+    return $false
 }
 
 function Get-ManifestInstallerName {
