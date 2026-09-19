@@ -144,6 +144,11 @@ function Invoke-ScoopRetry {
             throw "FATAL: 以下关键包安装失败: $list"
         }
     }
+
+    # GitHub 的 pwsh wrapper 在脚本末尾追加 `exit $LASTEXITCODE`，所以失败的
+    # `scoop install` 会把整个 step 判成失败 —— 哪怕失败已经被这里容忍（-ContinueOnError）。
+    # 走到这里说明本函数成功了（不可接受的失败在上面 throw），清零它。
+    $global:LASTEXITCODE = 0
 }
 
 function Add-ScoopBucket {
@@ -221,6 +226,9 @@ function Install-PipPackages {
     & $PythonPath -m pip freeze | Set-Content -Path $LockFile -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw 'pip freeze 失败，无法生成环境快照。' }
     Write-Host "  已写入 $LockFile（$((Get-Content $LockFile).Count) 个包）"
+
+    # 同上：逐包重试阶段留下的失败退出码会让 step 判失败
+    $global:LASTEXITCODE = 0
 }
 
 function Set-BuildEnv {
