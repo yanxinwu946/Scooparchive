@@ -1,24 +1,11 @@
 # =============================================================================
-# ValidateLib.ps1 — 构建计划的静态校验
+# ValidateLib.ps1 — 构建计划的静态校验（只读，不装任何东西）
 #
-# 独立于构建：这里不装任何东西，只读 layers.psd1 和各 bucket 的 manifest。
+# 把 README「确认包在离线环境真能跑通」那份人工清单变成秒级断言。没有它，包名打错
+# 或混进一个 -np 包，只能在几十分钟的构建跑到最后才发现。
 #
-# 存在的理由
-# ----------
-# 没有它，一个包名打错、一个 -np 包混进来、一个变体忘了加进 workflow 的 options，
-# 都只能在 350 分钟的构建跑到最后才发现 —— 或者更糟，构建「成功」但归档缺包。
-# 这里把 README「确认包在离线环境真能跑通」那份人工清单变成秒级的断言。
-#
-# 与 ScoopLib 的分工
-# ------------------
-#   ScoopLib.ps1    读计划 + 装包（构建期用）
-#   ValidateLib.ps1 读计划 + 校验（校验 job 用，不装包）
-# 校验需要 Get-BuildPlan / Get-LayerPackages，所以点源 ScoopLib 拿它们。
-#
-# 用法
-# ----
-#     . "$env:GITHUB_WORKSPACE\.github\scripts\ValidateLib.ps1"
-#     if (-not (Invoke-PlanValidation -BucketRoot $root -WorkflowFile $wf)) { throw '校验失败' }
+# 用法：. "$env:GITHUB_WORKSPACE\.github\scripts\ValidateLib.ps1"
+#       Invoke-PlanValidation -BucketRoot $root -WorkflowFile $wf
 # =============================================================================
 
 . (Join-Path $PSScriptRoot 'ScoopLib.ps1')
@@ -29,17 +16,12 @@ function Test-BuildPlan {
         静态校验：包是否存在、有没有歧义、manifest 有没有踩离线归档的坑。
 
     .DESCRIPTION
-        三类结果：
-          Errors    结构性错误，包根本装不上 —— 调用方应直接失败
-          Warnings  已知的坑，大概率是真问题 —— 报告但不阻塞（有些是有意为之）
-          Notes     仅供参考的提示（manifest 的 suggest 等）—— 不阻塞也不该淹没有效信号
+        Errors    结构性错误，包根本装不上 —— 调用方应直接失败
+        Warnings  已知的坑，大概率是真问题
+        Notes     仅供参考的提示（suggest 等），不该淹没有效信号
 
     .PARAMETER BucketRoot
-        本地 bucket 目录，子目录名即 bucket 名（含 main —— 它是 scoop 自带的，
-        不在 layers.psd1 的 Buckets 表里）。
-
-    .OUTPUTS
-        PSCustomObject — Errors / Warnings / Notes / Resolved
+        本地 bucket 目录，子目录名即 bucket 名（含 main，它是 scoop 自带的）。
     #>
     [CmdletBinding()]
     param(
@@ -51,9 +33,8 @@ function Test-BuildPlan {
     $warnings = [System.Collections.Generic.List[string]]::new()
     $notes = [System.Collections.Generic.List[string]]::new()
 
-    # 索引：bucket → manifest 名集合。
-    # 只扫 <bucket>/bucket/ —— scoop 的 manifest 查找就是这个路径，deprecated/
-    # 只在「已安装」分支才回退，全新安装找不到（见 README）。
+    # 索引：bucket → manifest 名集合。只扫 <bucket>/bucket/ —— scoop 的查找路径就是它，
+    # deprecated/ 只在「已安装」分支才回退，全新安装找不到
     $index = @{}
     foreach ($dir in Get-ChildItem $BucketRoot -Directory -ErrorAction Ignore) {
         $manifestDir = Join-Path $dir.FullName 'bucket'
@@ -88,8 +69,7 @@ function Test-BuildPlan {
                 continue
             }
 
-            # 裸名必须在唯一一个 bucket 里 —— 多个 bucket 都有时，scoop 取哪个
-            # 取决于遍历顺序（README：包名要带 bucket 前缀）
+            # 裸名必须在唯一一个 bucket 里 —— 多个都有时 scoop 取哪个取决于遍历顺序
             $hits = @($index.Keys | Where-Object { $index[$_] -contains $pkg } | Sort-Object)
             if ($hits.Count -eq 0) {
                 $errors.Add("'$pkg'：任何 bucket 里都没有这个名字")
@@ -112,14 +92,13 @@ function Test-BuildPlan {
 
         $script = Get-ManifestScriptText -Manifest $m
 
-        # 1. PATH 写到归档外面（go / uv / bun 都是：Add-Path 写持久用户 PATH，
-        #    不是 env_add_path，scoop reset 不会重建）
+        # 1. PATH 写到归档外（go / uv / bun 的 Add-Path 不是 env_add_path，scoop reset 不重建）
         if ($script -match 'Add-Path') {
             $warnings.Add("'$pkg'：installer script 用 Add-Path 写持久 PATH —— 不是 env_add_path，scoop reset 不会重建，还原后要手工补")
         }
 
-        # 2. 装到系统目录。README 记的例外：安装器被声明成 bin 时文件会留在 $dir 里
-        #    随归档走（vcredist-aio 就是），那是「还原后手工跑一次」，不是「只剩假记录」。
+        # 2. 装到系统目录。例外：安装器被声明成 bin 时文件留在 $dir 里随归档走
+        #    （vcredist-aio 就是），那是「还原后手工跑一次」，不是「只剩假记录」
         if ($script -match 'RunAs|msiexec|is_admin|require_admin' -or $pkg -like '*-np') {
             $installerName = Get-ManifestInstallerName -Manifest $m
             if ($installerName -and (Get-ManifestBinNames -Manifest $m) -contains $installerName) {
@@ -129,10 +108,8 @@ function Test-BuildPlan {
             }
         }
 
-        # 3. 依赖与建议。scoop 会自动补装 depends（scoop-install.ps1 的
-        #    Get-Dependency），所以 depends 不在计划里不是缺陷，只是「归档会多出
-        #    计划外的包」的提示。suggest 按定义是可选，同样是提示 —— 把它当警告
-        #    只会制造噪声（helix / starship / dotnet-sdk 都 suggest vcredist）。
+        # 3. 依赖与建议。scoop 会自动补装 depends，所以 depends 不在计划里不是缺陷，
+        #    只是「归档会多出计划外的包」。suggest 按定义是可选，当警告只会制造噪声。
         foreach ($d in @(Get-ManifestPackageRefs -Manifest $m -Field 'depends')) {
             if ($planNames -notcontains $d) {
                 $notes.Add("'$pkg'：depends 里有 '$d'，不在计划里 —— scoop 会自动补装它，归档会多出这个包")
@@ -169,9 +146,8 @@ function Test-VariantConsistency {
         校验 workflow 的 workflow_dispatch options 与 layers.psd1 的 Variants 是否一致。
 
     .DESCRIPTION
-        workflow_dispatch 的选项列表是静态的，没法从 psd1 生成，只能手工同步。这是
-        这套设计里唯一躲不掉的重复，所以用一条断言钉住它：加了变体却忘了改 options
-        （或反过来），校验立刻失败，而不是等有人触发构建时才发现。
+        workflow_dispatch 的 options 是静态的，没法从 psd1 生成，只能手工同步 ——
+        这是这套设计里唯一躲不掉的重复，用一条断言钉住它。
 
     .OUTPUTS
         System.String — 不一致项；无输出表示一致
@@ -210,8 +186,7 @@ function Invoke-PlanValidation {
         校验所有变体：结构、包是否存在、manifest 有没有踩离线归档的坑。
 
     .DESCRIPTION
-        校验 job 的编排。结构性错误以 ::error:: annotation 报出并让调用方失败；
-        Warnings / Notes 只进 Step Summary，不阻塞 —— 有些坑是有意为之的。
+        结构性错误以 ::error:: 报出并返回 $false；Warnings / Notes 只进 Step Summary。
 
     .OUTPUTS
         System.Boolean — $true 表示没有结构性错误
@@ -283,11 +258,8 @@ function Get-ManifestScriptText {
         把 manifest 里所有会执行脚本的字段拼成一段文本，供 lint 正则扫描。
 
     .DESCRIPTION
-        只看会执行的字段，不看 notes —— notes 是给人读的自由文本，里面提到
-        msiexec / Add-Path 属于正常描述，扫它只会制造误报。
-
-        整行注释也要剥掉：python 的 manifest 里有一行
-        `# appendpath.msi ... causes 'msiexec /a' to fail`，不剥就会误报「装到系统目录」。
+        只看会执行的字段，不看 notes —— notes 是自由文本，提到 msiexec 属正常描述。
+        整行注释也要剥掉：python 的 manifest 有一行注释提到 'msiexec /a'，不剥会误报。
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Manifest)
@@ -316,10 +288,9 @@ function Get-ManifestPackageRefs {
         取 manifest 里 depends / suggest 字段引用的包名。
 
     .DESCRIPTION
-        这两个字段有三种写法：字符串、字符串数组、以及 { 包名 = 架构数组 } 的对象。
-        不能直接用 .PSObject.Properties.Name 一把梭 —— 字段是字符串时那样返回的是
-        字符串自身的属性（Length / IsReadOnly …），会变成假依赖。
-        openssl-lts-light 的 depends 就是字符串，踩到过。
+        字段有三种写法：字符串、字符串数组、{ 包名 = 架构数组 } 的对象。
+        不能直接 .PSObject.Properties.Name 一把梭 —— 字段是字符串时那返回的是字符串
+        自身的属性（Length…），会变成假依赖。
 
     .OUTPUTS
         System.String — 包名，可能多个
@@ -355,8 +326,8 @@ function Get-ManifestInstallerName {
         取 manifest 里安装器落地后的文件名。
 
     .DESCRIPTION
-        scoop 用 url 的 `#/name` 片段给下载文件重命名（vcredist-aio 的 url 结尾是
-        `#/vcredist-aio.exe`）。url 可能写在顶层，也可能写在 architecture.<arch> 下。
+        scoop 用 url 的 `#/name` 片段给下载文件重命名。url 可能在顶层，也可能在
+        architecture.<arch> 下。
 
     .OUTPUTS
         System.String — 文件名；取不到时返回 $null
@@ -380,8 +351,7 @@ function Get-ManifestBinNames {
         取 manifest 的 bin 声明里的可执行文件名。
 
     .DESCRIPTION
-        bin 有三种写法：字符串、字符串数组、以及 [别名, 目标] 的数组数组
-        （helix 是 `{hx.exe, hx.exe helix}`）。这里统一拍平成文件名集合。
+        bin 有三种写法：字符串、字符串数组、[别名, 目标] 的数组数组。统一拍平。
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Manifest)

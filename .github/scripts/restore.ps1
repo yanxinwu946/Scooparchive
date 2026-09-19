@@ -3,32 +3,21 @@
     ScoopArchive 还原脚本 —— 随归档发布，在目标机上以管理员身份运行。
 
 .DESCRIPTION
-    把 README 里那段手工还原步骤脚本化，并读 ARCHIVE.json 处理变体相关的收尾。
+    把 README 里那段手工还原步骤脚本化。自包含：归档里没有 .github/，不能依赖 ScoopLib。
 
-    设计约束：本脚本在归档里独立存在，不能依赖 .github/ 下的任何东西（那些不进归档），
-    所以这里的辅助函数是自包含的。
-
-    做完的事
-    --------
       1. 设 SCOOP / GOPATH（用户级）
-      2. 把 $SCOOP\shims、归档内记录的所有额外 PATH 目录追加进用户级 PATH（幂等）
-      3. scoop reset *  —— 重建 shim 与 env_add_path / env_set
-      4. scoop cleanup * —— 清掉安装期的旧版本
-      5. 离线收尾：跑 vcredist-aio（安装器随归档走，装齐 VC++ 运行库）
+      2. 把 $SCOOP\shims 与 ARCHIVE.json 记录的额外 PATH 目录追加进用户级 PATH（幂等）
+      3. scoop reset * / scoop cleanup *
+      4. 跑 vcredist-aio 装齐 VC++ 运行库
 
-    为什么 2 是必需的：manifest 里用 Add-Path 写死的目录（go / uv / bun 都这么干）
-    记在注册表 PATH 里，不是文件、不随归档走，而且不是 env_add_path，`scoop reset`
-    不会重建。ARCHIVE.json 的 extraPath 就是构建期采集下来的这部分目录。
+    第 2 步里的「额外 PATH 目录」指 Add-Path 写死的那些（go / uv / bun）—— 它们记在
+    注册表里，不随归档走，也不是 env_add_path，`scoop reset` 不会重建。
 
 .PARAMETER Root
     归档解压后的根目录。默认取本脚本所在目录 —— 脚本就放在归档根。
 
 .PARAMETER SkipNativeInstallers
     跳过 vcredist-aio。不想让还原脚本改系统组件时用。
-
-.EXAMPLE
-    # 在归档根目录，管理员 PowerShell
-    .\restore.ps1
 #>
 [CmdletBinding()]
 param(
@@ -53,7 +42,7 @@ function Invoke-Native {
 
     .DESCRIPTION
         $ErrorActionPreference = 'Stop' 对原生命令无效 —— 失败只设置 $LASTEXITCODE，
-        脚本会「绿色失败」。所以这里逐个检查。理由同构建端的 ScoopLib.ps1。
+        脚本会「绿色失败」。理由同构建端的 ScoopLib.ps1。
     #>
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -80,8 +69,8 @@ function Add-PersistentPath {
         把目录追加进用户级 PATH，幂等。
 
     .DESCRIPTION
-        写进注册表的是 %SCOOP%\<相对路径> 这样的字面量，不是展开后的绝对路径 ——
-        这样归档还原到任意根目录都成立，条目跟着 SCOOP 走。
+        写进注册表的是 %SCOOP%\<相对路径> 字面量而非绝对路径 —— 这样归档还原到
+        任意根目录都成立。
     #>
     param([Parameter(Mandatory)][string[]]$Relative)
 
@@ -183,8 +172,7 @@ Write-Section '离线收尾'
 if ($SkipNativeInstallers) {
     Write-Host '  [skip] 按 -SkipNativeInstallers 跳过 vcredist-aio'
 } elseif (Get-Command 'vcredist-aio' -ErrorAction Ignore) {
-    # 这个包的 manifest 把安装器声明成了 bin，所以 vcredist-aio.exe 随归档走。
-    # 它写系统目录，归档覆盖不到，只能还原后跑一次。
+    # 安装器被声明成了 bin，所以 vcredist-aio.exe 随归档走；它写系统目录，只能还原后跑
     Invoke-Native -FilePath 'vcredist-aio' -Arguments @('/ai', '/gm2')
 } else {
     Write-Warning '没找到 vcredist-aio —— VC++ 运行库未安装，依赖它的程序可能起不来。'

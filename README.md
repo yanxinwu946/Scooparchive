@@ -128,8 +128,6 @@ GitHub Actions 的每个 step 是独立进程、函数不跨 step 存活，所�
 . "$env:GITHUB_WORKSPACE\.github\scripts\ValidateLib.ps1"   # 校验（内部会点源 ScoopLib）
 ```
 
-两个库的分工是「装包」与「只读检查」，后者依赖前者（校验要读计划），反过来不行。
-
 **ScoopLib.ps1 —— 读计划 + 装包**
 
 | 函数 | 用途 |
@@ -154,7 +152,7 @@ GitHub Actions 的每个 step 是独立进程、函数不跨 step 存活，所�
 | `Invoke-PlanValidation` | 校验所有变体，出 Step Summary，返回是否有结构性错误 |
 | `Get-Manifest*` | manifest 解析辅助（脚本文本、depends/suggest、安装器名、bin 名） |
 
-`Test-BuildPlan` 查四类问题，**前两类是错误，后两类是提示**：
+`Test-BuildPlan` 查的问题，**只有包不存在和有歧义会失败，其余只报告**：
 
 | 检查 | 判据 | 级别 |
 |---|---|---|
@@ -191,22 +189,11 @@ GitHub Actions 的每个 step 是独立进程、函数不跨 step 存活，所�
 | 加一个变体 | `Layers` 定义层 → `Variants` 加映射 → **workflow 的 `options:` 也加一行** |
 | 加一个全家桶变体 | `Variants` 里写 `@('*')`，会被展开成 `Order` 全集 |
 
-两处必须手工同步，改错会在构建时报明确错误而不是静默出错：
+两个约束：`options:` 是静态列表（唯一躲不掉的重复），`Order` 决定安装顺序且 `base` 必须
+留在第一位（它的解包器是后续包的前提）。
 
-- `workflow_dispatch` 的 `options:` 是静态列表，加变体必须同时改 workflow
-- 新层名要进 `Order`，否则不会被 `'*'` 展开；`base` 必须留在第一位，它的解包器是
-  后续所有包的前提
-
-改完 **push 就会自动跑校验**（`.github/workflows/validate.yml`）：它把所有 bucket 浅克隆
-下来，逐个变体检查包是否存在、有没有歧义，并 lint manifest。所以加包的流程是：
-
-1. 改 `layers.psd1`
-2. push —— 校验 job 几秒到一两分钟给结果
-3. 通过了再手动触发 `Scoop Archive` 构建
-
-第 2 步替代了「跑几十分钟构建才发现包名打错」的循环。校验只读不装，和构建共用同一份
-`layers.psd1`，所以不会出现「校验说没问题但构建装不上」的情况 —— 除非是网络或上游
-manifest 变了。
+改完 push 就会自动跑校验（`.github/workflows/validate.yml`），几秒到一两分钟给结果，
+通过了再手动触发 `Scoop Archive`。校验只读不装，和构建共用同一份 `layers.psd1`。
 
 `Install-ScoopLayer` 还认三个可选字段：`Env`（装包前设持久环境变量）、`MkDir`（装包前
 建目录）、`Pin`（装完后按顺序 `scoop reset`，给写同一个变量的多个包定序 —— JDK 都写

@@ -1,9 +1,7 @@
 name: ✅ Validate
 
 # 秒级的静态校验：不装任何包，只读 layers.psd1 和各 bucket 的 manifest。
-#
-# 存在的理由：构建一次要几十分钟到几小时，而「包名打错」「变体忘了加进 options」
-# 「混进一个 -np 包」这类错误完全可以在几秒内查出来。详见 ValidateLib.ps1。
+# 详见 ValidateLib.ps1。
 on:
   push:
     branches: [main]
@@ -22,8 +20,8 @@ jobs:
       - name: 'Checkout'
         uses: actions/checkout@v7
 
-      # 校验要读 manifest，所以把 bucket 浅克隆下来。不装 scoop —— 这里只需要文件，
-      # git clone 更直接，也顺带验证 layers.psd1 里写的 Repo 是可达的。
+      # 校验要读 manifest。不装 scoop —— 只需要文件，git clone 更直接，
+      # 也顺带验证 layers.psd1 里写的 Repo 可达。
       - name: 'Clone Buckets'
         shell: pwsh
         run: |
@@ -47,8 +45,7 @@ jobs:
           }
           Write-Host "已克隆 $($repos.Count) 个 bucket 到 $root"
 
-      # 归档自带的 restore.ps1 在 CI 里从不执行（只在目标机上跑），语法错误会一路
-      # 潜伏到内网才炸。用 PowerShell 解析器静态检查所有脚本。
+      # restore.ps1 在 CI 里从不执行（只在目标机上跑），语法错误会潜伏到内网才炸
       - name: 'Check PowerShell Syntax'
         shell: pwsh
         run: |

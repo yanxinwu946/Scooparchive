@@ -24,9 +24,8 @@ runs:
         [Environment]::SetEnvironmentVariable('SCOOP', $env:SCOOP, 'Machine')
         Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 
-        # 记录安装前的持久 PATH 基线。Write-ArchiveManifest 拿它算差集，得到构建期间
-        # 新增的 PATH 条目 —— manifest 里用 Add-Path 写死的目录（go / uv / bun）不在
-        # 归档里、`scoop reset` 也不重建，必须记下来交给还原脚本。
+        # 持久 PATH 基线，Write-ArchiveManifest 拿它算差集得到构建期新增的条目
+        # （go / uv / bun 的 Add-Path 不随归档走，必须记下来交给还原脚本）。
         # 必须早于 scoop 安装脚本，否则基线里已经混进 shims。
         [Environment]::GetEnvironmentVariable('PATH', 'User') |
           Set-Content -Path (Join-Path $env:RUNNER_TEMP 'path-baseline.txt') -Encoding utf8
@@ -63,17 +62,15 @@ runs:
 
         Write-Section '注册 Scoop buckets'
 
-        # 清单在 layers.psd1 的 Buckets 表（main 由 scoop 自带，不在表里）。
-        # Get-ScoopBucketList 会跳过不属于当前变体的 bucket。
+        # 清单在 layers.psd1 的 Buckets 表（main 由 scoop 自带）。会跳过不属于
+        # 当前变体的 bucket。
         $plan = Get-BuildPlan -Variant '${{ inputs.variant }}'
         foreach ($bucket in Get-ScoopBucketList -Plan $plan) {
           Add-ScoopBucket -Name $bucket.Name -Repo $bucket.Repo
         }
 
-    # 只装 base 层的 Early 组。它们要负责后续所有下载，而 aria2 的配置只有在
-    # aria2 装好之后设置才有意义 —— 所以这一步必须早于其它所有装包步骤。
-    # base 层的其余包（解包器 / CLI 工具集 / VC++ 运行库）由 workflow 的
-    # Install Layers 步骤安装，清单在 layers.psd1。
+    # 只装 base 层的 Early 组：它们要负责后续所有下载，而 aria2 的配置只有在 aria2
+    # 装好之后设置才有意义。base 层其余包由 workflow 的 Install Layers 步骤安装。
     - name: 'Install Bootstrap Packages + aria2'
       shell: pwsh
       run: |
