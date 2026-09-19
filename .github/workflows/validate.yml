@@ -20,6 +20,14 @@ jobs:
       - name: 'Checkout'
         uses: actions/checkout@v7
 
+      # 这个仓库的构建很吃磁盘（dev 变体装完 + 归档同盘），先留个基线数据
+      - name: 'Report Disk Space'
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $_.Used -ne $null } |
+            ForEach-Object { "  {0}: 可用 {1:N1} GB / 共 {2:N1} GB" -f $_.Name, ($_.Free / 1GB), (($_.Free + $_.Used) / 1GB) }
+
       # 校验要读 manifest。不装 scoop —— 只需要文件，git clone 更直接，
       # 也顺带验证 layers.psd1 里写的 Repo 可达。
       - name: 'Clone Buckets'
