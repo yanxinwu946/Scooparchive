@@ -1,0 +1,96 @@
+name: 'Setup Scoop Environment'
+description: 'Install Scoop, register buckets, configure aria2, and install the base bootstrap packages'
+
+inputs:
+  variant:
+    description: 'Build variant (base | codeql | python | agent | dev | pentest | re | apps | apps-plus)'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 'Install Scoop'
+      shell: pwsh
+      run: |
+        . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+
+        New-Item -ItemType Directory -Force -Path 'D:\00PackageManager' | Out-Null
+        $env:SCOOP = 'D:\00PackageManager\Scoop'
+
+        # 持久化到后续 step
+        "SCOOP=$env:SCOOP" >> $env:GITHUB_ENV
+        "$env:SCOOP\shims" >> $env:GITHUB_PATH
+
+        [Environment]::SetEnvironmentVariable('SCOOP', $env:SCOOP, 'Machine')
+        Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+
+        # 先落盘再用子进程执行，退出码由 Invoke-Native 显式检查。
+        #
+        # 不用 `iwr | iex`：scoop 安装脚本按 $env:CI 决定失败行为
+        # （install.ps1 的 Exit-Install —— 只有 CI 已设置时才走 `exit`，
+        # 否则在 iex 场景下只设 $LASTEXITCODE 然后 break，静默继续）。
+        # GitHub Actions 默认 CI=true 所以两者都能失败退出，但落盘执行
+        # 不依赖这个变量，且报错里带得出退出码。
+        $installer = Join-Path $env:RUNNER_TEMP 'scoop-install.ps1'
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://get.scoop.sh' -OutFile $installer
+        Invoke-Native -FilePath 'pwsh' `
+          -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installer)
+
+        # 安装脚本写的是机器级/用户级 PATH，当前进程的 $env:PATH 不会自动刷新，
+        # 所以这里手动重建，否则紧接着的 Get-Command scoop 会误报失败。
+        $env:PATH = @(
+          "$env:SCOOP\shims",
+          [Environment]::GetEnvironmentVariable('PATH', 'Machine'),
+          [Environment]::GetEnvironmentVariable('PATH', 'User')
+        ) -join ';'
+
+        if (-not (Get-Command scoop -ErrorAction Ignore)) {
+          throw 'Scoop 安装脚本执行完毕，但仍找不到 scoop 命令。'
+        }
+        Invoke-Native -FilePath 'scoop' -Arguments @('--version')
+
+    - name: 'Register Scoop Buckets'
+      shell: pwsh
+      run: |
+        . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+
+        Write-Section '注册 Scoop buckets'
+
+        Add-ScoopBucket -Name 'extras'
+        Add-ScoopBucket -Name 'versions'
+        Add-ScoopBucket -Name 'nirsoft'
+        Add-ScoopBucket -Name 'java'
+        Add-ScoopBucket -Name 'nonportable'
+        Add-ScoopBucket -Name 'nerd-fonts'
+        Add-ScoopBucket -Name 'ktools' -Repo 'https://github.com/kenyon-wong/ktools'
+
+        # r-bucket 仅 codeql / python 需要
+        if ('${{ inputs.variant }}' -in @('codeql', 'python')) {
+          Add-ScoopBucket -Name 'r-bucket' -Repo 'https://github.com/cderv/r-bucket.git'
+        }
+
+    # 只装 base 层的 Early 组。它们要负责后续所有下载，而 aria2 的配置只有在
+    # aria2 装好之后设置才有意义 —— 所以这一步必须早于其它所有装包步骤。
+    # base 层的其余包（解包器 / CLI 工具集 / VC++ 运行库）由 workflow 的
+    # Install Layers 步骤安装，清单在 layers.psd1。
+    - name: 'Install Bootstrap Packages + aria2'
+      shell: pwsh
+      run: |
+        . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+
+        Write-Section '安装引导包并启用 aria2 多线程下载'
+
+        $plan = Get-BuildPlan -Variant '${{ inputs.variant }}'
+        Install-ScoopLayer -Layer 'base' -Plan $plan -EarlyOnly
+
+        $config = @{
+          'aria2-warning-enabled'         = 'false'
+          'aria2-enabled'                 = 'true'
+          'aria2-retry-wait'              = '4'
+          'aria2-split'                   = '16'
+          'aria2-max-connection-per-server' = '16'
+          'aria2-min-split-size'          = '4M'
+        }
+        foreach ($key in $config.Keys) {
+          Invoke-Native -FilePath 'scoop' -Arguments @('config', $key, $config[$key])
+        }

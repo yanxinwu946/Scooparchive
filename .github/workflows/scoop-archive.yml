@@ -1,0 +1,139 @@
+name: 🔨 Scoop Archive
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: '选择构建变体'
+        required: true
+        type: choice
+        default: 'base'
+        # 每个变体 = base + 一层，映射与包清单在 .github/scripts/layers.psd1。
+        # 加变体要同时改那边的 Variants
+        options:
+          - base       # 最小 CLI 工具集 + VC++ 运行库
+          - codeql     # JDK 矩阵 + 静态代码分析
+          - python     # Python 开发环境
+          - agent      # AI 辅助开发
+          - dev        # 开发工具链与 IDE
+          - pentest    # Web / 内网渗透
+          - re         # 逆向工程与样本取证
+          - apps       # 常用桌面软件
+          - apps-plus  # 增强桌面软件
+
+# 构建只需要读仓库
+permissions:
+  contents: read
+
+# 同一变体不并发：重复触发只会互相拖慢并重复消耗额度
+concurrency:
+  group: scoop-archive-${{ inputs.variant }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # codeql 要拉两个 git 仓库，磁盘占用高于常规变体
+    runs-on: ${{ inputs.variant == 'codeql' && 'windows-2025' || 'windows-latest' }}
+    environment: dev
+    # 平台硬上限是 360 分钟。留出余量，让超时以明确错误失败而不是被硬杀（那样没有日志尾部）
+    timeout-minutes: 350
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+
+      # 装 Scoop、注册 bucket、配置 aria2、装 base 层的引导包。
+      # 包清单不在这里，在 layers.psd1。
+      - name: 'Setup Scoop Environment'
+        uses: ./.github/actions/setup-scoop
+        with:
+          variant: ${{ inputs.variant }}
+
+      # 变体 → 层的展开在 layers.psd1。这里只取结果：后续 step 一律用
+      # steps.plan.outputs.* 判断，不再重复写 `variant == 'x'`
+      - name: 'Resolve Build Plan'
+        id: plan
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+
+          $plan = Get-BuildPlan -Variant '${{ inputs.variant }}'
+          "layers=$($plan.Layers -join ',')" >> $env:GITHUB_OUTPUT
+          "has_codeql=$($plan.Layers -contains 'codeql')" >> $env:GITHUB_OUTPUT
+          "has_python=$($plan.Layers -contains 'python')" >> $env:GITHUB_OUTPUT
+
+          # 归档产物是不透明的 7z，把「装了什么」留在 run 页面上
+          Write-BuildSummary -Plan $plan
+
+      # 包清单、失败策略、层顺序全部来自 layers.psd1 —— 加包不用改这个 step
+      - name: 'Install Layers'
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+
+          $plan = Get-BuildPlan -Variant '${{ inputs.variant }}'
+          foreach ($layer in $plan.Layers) {
+            Install-ScoopLayer -Layer $layer -Plan $plan
+          }
+
+      # 层之外的额外动作：规则仓库不在 bucket 里，只能 git clone
+      - name: 'Install CodeQL Rules'
+        if: steps.plan.outputs.has_codeql == 'true'
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+          Write-Section '拉取 CodeQL 规则仓库'
+
+          Invoke-Native -FilePath 'git' -Arguments @(
+            'clone', '--depth', '1', 'https://github.com/github/vscode-codeql-starter.git',
+            'D:\00PackageManager\vscode-codeql-starter'
+          )
+          Invoke-Native -FilePath 'git' -Arguments @(
+            'clone', '--depth', '1', 'https://github.com/github/codeql.git',
+            'D:\00PackageManager\CodeqlRules'
+          )
+
+      # 层之外的额外动作：pip 依赖在 requirements.txt 里，不是 scoop 包
+      - name: 'Install Python Packages'
+        if: steps.plan.outputs.has_python == 'true'
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+          Write-Section '安装 Python 依赖'
+
+          Install-PipPackages -PythonPath "$env:SCOOP\apps\python\current\python.exe"
+
+      - name: 'Cleanup'
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+          Write-Section '清理缓存与旧版本'
+
+          Invoke-Native -FilePath 'scoop' -Arguments @('cache', 'rm', '*')
+          Invoke-Native -FilePath 'scoop' -Arguments @('cleanup', '*')
+
+          Write-Host "`n=== Scoop packages ===" -ForegroundColor Cyan
+          scoop list
+
+      - name: 'Compress'
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+          Write-Section '压缩归档'
+
+          $sevenZip = "$env:SCOOP\apps\7zip\current\7z.exe"
+          if (-not (Test-Path $sevenZip)) { throw "找不到 7z: $sevenZip" }
+
+          $archive = "D:\Scoop-${{ inputs.variant }}.7z"
+          Invoke-Native -FilePath $sevenZip `
+            -Arguments @('a', '-mx9', '-t7z', $archive, 'D:\00PackageManager\*')
+          Invoke-Native -FilePath $sevenZip -Arguments @('l', $archive)
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Scoop-${{ inputs.variant }}-${{ github.run_id }}
+          path: D:\Scoop-${{ inputs.variant }}.7z
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error

@@ -1,0 +1,64 @@
+# Python 常用库 —— python / pro 变体
+#
+# 收录原则
+# --------
+# 1. 只声明「你会直接 import 的库」，不声明传递依赖。
+#    以前这份清单是 `pip freeze` 的产物，55 条声明里 21 条是别的包自动带入的
+#    （certifi←requests、frida←frida-tools、numpy←pandas…），
+#    还夹带了 accelerate→torch 这条 531 MB 的 ML 依赖链。
+# 2. 版本锁定不在这里做 —— 构建时会执行 `pip freeze` 写出 requirements.lock，
+#    那才是钉死传递依赖的正确位置。本文件只表达「要什么」。
+# 3. 安全工具本体（sqlmap / pocsuite / androguard / frida / dsinternals /
+#    ldapdomaindump 等）已移出，按需自行安装。环境本身保持干净。
+# 4. uv / pipx / pnpm 由 scoop 安装原生二进制，不在这里重复声明。
+
+# ── 构建工具链 ──────────────────────────────────────────────
+pip
+setuptools
+wheel
+
+# ── HTTP / 网络 ────────────────────────────────────────────
+requests
+httpx
+aiohttp
+websocket-client
+dnspython
+netaddr
+paramiko
+pysocks
+
+# ── 加密 / 编码 ────────────────────────────────────────────
+cryptography
+pycryptodome
+pyjwt
+qrcode
+
+# ── 解析 ──────────────────────────────────────────────────
+beautifulsoup4
+lxml
+PyYAML
+python-dateutil
+chardet
+tldextract
+python-magic
+
+# ── 数据处理 ──────────────────────────────────────────────
+numpy
+pandas
+openpyxl
+XlsxWriter
+
+# ── CLI / 终端 ────────────────────────────────────────────
+click
+typer
+rich
+tqdm
+colorama
+
+# ── 校验 / 通用工具 ────────────────────────────────────────
+pydantic
+packaging
+python-dotenv
+psutil
+jinja2
+tenacity
