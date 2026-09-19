@@ -114,7 +114,13 @@
                 # 凭据与密钥扫描
                 'trufflehog',
                 # burp-suite-pro-np 是 -np 包，安装器写 Program Files，不进归档
-                'burp-suite-pro-np', 'sslscan', 'osv-scanner'
+                'burp-suite-pro-np', 'osv-scanner'
+            )
+            Optional = @(
+                # 上游 main bucket 的 sslscan 2.2.3 manifest 哈希和 GitHub 上的实际
+                # 文件对不上（hash check failed），fail-loud 会让整个 pentest 变体
+                # 构建不出来。放 Optional：装不上只发告警，ARCHIVE.json 里记为缺包
+                'sslscan'
             )
         }
 
