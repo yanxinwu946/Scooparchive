@@ -122,7 +122,9 @@
                 'obsidian', 'sumatrapdf', 'honeyview', 'pandoc', 'vscode',
                 'vlc', 'snipaste', 'picgo',
                 'sysinternals', 'TrafficMonitor', 'SpaceSniffer', 'dupeGuru', 'renamer',
-                'nircmd', 'scoop-search', 'everything-cli',
+                # nircmd 在 main 和 nirsoft 里都有（同一个二进制），带前缀保证确定性。
+                # nirsoft 版声明 bin（shim 落在 $SCOOP\shims）且有 persist，更适合归档
+                'nirsoft/nircmd', 'scoop-search', 'everything-cli',
                 'keepassxc', 'keepass-plugin-keepassrpc', 'gpg'
             )
         }
