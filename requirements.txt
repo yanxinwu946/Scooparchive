@@ -1,4 +1,4 @@
-# Python 常用库 —— python / pro 变体
+# Python 常用库 —— python 变体
 #
 # 收录原则
 # --------

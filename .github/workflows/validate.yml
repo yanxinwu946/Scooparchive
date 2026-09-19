@@ -1,0 +1,79 @@
+name: ✅ Validate
+
+# 秒级的静态校验：不装任何包，只读 layers.psd1 和各 bucket 的 manifest。
+#
+# 存在的理由：构建一次要几十分钟到几小时，而「包名打错」「变体忘了加进 options」
+# 「混进一个 -np 包」这类错误完全可以在几秒内查出来。详见 ValidateLib.ps1。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v7
+
+      # 校验要读 manifest，所以把 bucket 浅克隆下来。不装 scoop —— 这里只需要文件，
+      # git clone 更直接，也顺带验证 layers.psd1 里写的 Repo 是可达的。
+      - name: 'Clone Buckets'
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ValidateLib.ps1"
+
+          $root = Join-Path $env:RUNNER_TEMP 'buckets'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+          # main 是 scoop 自带的，不在 layers.psd1 的 Buckets 表里，单独加
+          $repos = [ordered]@{ 'main' = 'https://github.com/ScoopInstaller/Main' }
+          # -All：校验要覆盖所有变体，不管 bucket 是不是按变体条件注册的
+          foreach ($variant in (Import-PowerShellDataFile "$env:GITHUB_WORKSPACE\.github\scripts\layers.psd1").Variants.Keys) {
+            $plan = Get-BuildPlan -Variant $variant
+            foreach ($bucket in Get-ScoopBucketList -Plan $plan -All) { $repos[$bucket.Name] = $bucket.Repo }
+          }
+
+          foreach ($name in $repos.Keys) {
+            $dest = Join-Path $root $name
+            if (Test-Path $dest) { continue }
+            Invoke-Native -FilePath 'git' -Arguments @('clone', '--depth', '1', '--quiet', $repos[$name], $dest)
+          }
+          Write-Host "已克隆 $($repos.Count) 个 bucket 到 $root"
+
+      # 归档自带的 restore.ps1 在 CI 里从不执行（只在目标机上跑），语法错误会一路
+      # 潜伏到内网才炸。用 PowerShell 解析器静态检查所有脚本。
+      - name: 'Check PowerShell Syntax'
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem "$env:GITHUB_WORKSPACE\.github\scripts" -Filter *.ps1
+          foreach ($f in $files) {
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$parseErrors)
+            if ($parseErrors) {
+              $e = $parseErrors[0]
+              Write-Host "::error file=.github/scripts/$($f.Name),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              throw "$($f.Name) 有语法错误"
+            }
+            Write-Host "  ok  $($f.Name)" -ForegroundColor Green
+          }
+
+      - name: 'Validate Variants'
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ValidateLib.ps1"
+
+          $ok = Invoke-PlanValidation `
+            -BucketRoot (Join-Path $env:RUNNER_TEMP 'buckets') `
+            -WorkflowFile "$env:GITHUB_WORKSPACE\.github\workflows\scoop-archive.yml"
+
+          if (-not $ok) {
+            throw '校验发现结构性错误：包名不存在或有歧义。见上面的 ::error:: 与 Step Summary。'
+          }
+          Write-Host '校验通过。' -ForegroundColor Green

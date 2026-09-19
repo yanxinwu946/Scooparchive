@@ -115,6 +115,23 @@ jobs:
           Write-Host "`n=== Scoop packages ===" -ForegroundColor Cyan
           scoop list
 
+      # 让归档自描述、自还原：清单与还原脚本都写进归档根目录，随 7z 一起走。
+      # 必须在 Compress 之前 —— 压缩的是 D:\00PackageManager\*
+      - name: 'Write Archive Manifest'
+        shell: pwsh
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+          Write-Section '写入归档清单与还原脚本'
+
+          $plan = Get-BuildPlan -Variant '${{ inputs.variant }}'
+          Write-ArchiveManifest -Plan $plan
+
+          # restore.ps1 是仓库里的文件，复制而不是在这里生成：它能被版本控制、
+          # 能被校验 job lint，也省得在 YAML 里拼 PowerShell 字符串
+          $restore = "$env:GITHUB_WORKSPACE\.github\scripts\restore.ps1"
+          if (-not (Test-Path $restore)) { throw "找不到还原脚本: $restore" }
+          Copy-Item $restore 'D:\00PackageManager\restore.ps1' -Force
+
       - name: 'Compress'
         shell: pwsh
         run: |

@@ -228,6 +228,25 @@
         }
     }
 
+    # bucket 注册表。setup-scoop 按变体注册，校验 job 用 -All 全部克隆下来查 manifest。
+    # Repo 显式写全：scoop 内置的 known-buckets 表能解析这些名字，但校验 job 要自己
+    # 克隆，写全比在两边各猜一次 URL 可靠。nerd-fonts 不是官方 bucket。
+    # `main` 不在这里 —— 它是 scoop 自带的。
+    Buckets = @(
+        @{ Name = 'extras';      Repo = 'https://github.com/ScoopInstaller/Extras' }
+        @{ Name = 'versions';    Repo = 'https://github.com/ScoopInstaller/Versions' }
+        @{ Name = 'nirsoft';     Repo = 'https://github.com/ScoopInstaller/Nirsoft' }
+        @{ Name = 'java';        Repo = 'https://github.com/ScoopInstaller/Java' }
+        @{ Name = 'nonportable'; Repo = 'https://github.com/ScoopInstaller/Nonportable' }
+        @{ Name = 'nerd-fonts';  Repo = 'https://github.com/matthewjberger/scoop-nerd-fonts' }
+        @{ Name = 'ktools';      Repo = 'https://github.com/kenyon-wong/ktools' }
+        # r-bucket 只在 codeql / python 变体注册。
+        # 注意：目前计划里没有任何包来自它（92 个 manifest 全是 R 相关），等于每次
+        # codeql / python 构建白克隆一次。要么补上真正要用的 R 包，要么删掉这一行。
+        @{ Name = 'r-bucket';    Repo = 'https://github.com/cderv/r-bucket.git'
+           Variants = @('codeql', 'python') }
+    )
+
     # 变体 → 层组合。目前每个变体都是 base + 一层（见 README）。
     # 想加一个全家桶变体时写 @('*')，Get-BuildPlan 会展开成 Order 全集；
     # 记得同时把变体名加进 workflow 的 options 列表。

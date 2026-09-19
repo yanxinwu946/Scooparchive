@@ -4,6 +4,13 @@
 # 每个 workflow / composite action step 通过点源引入：
 #     . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
 #
+# 分工
+# ----
+#   ScoopLib.ps1    读构建计划 + 装包（构建期用）
+#   ValidateLib.ps1 读构建计划 + 静态校验（校验 job 用，不装任何东西）
+# 校验需要 Get-BuildPlan / Get-LayerPackages，所以 ValidateLib 点源本文件。
+# 反过来不行 —— 本文件不依赖校验，构建期用不到 lint。
+#
 # 存在的理由
 # ----------
 # `$ErrorActionPreference = 'Stop'` 对**原生命令**（scoop.cmd / pip.exe / git.exe）
@@ -446,3 +453,129 @@ function Write-BuildSummary {
         $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
     }
 }
+
+function Get-ScoopBucketList {
+    <#
+    .SYNOPSIS
+        取该变体需要注册的 bucket 列表。
+
+    .PARAMETER All
+        忽略 Variants 限制返回全部。校验 job 用它把所有 bucket 克隆下来查 manifest。
+
+    .OUTPUTS
+        PSCustomObject[] — Name / Repo
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Plan,
+        [switch]$All
+    )
+
+    foreach ($bucket in @($Plan.Plan.Buckets)) {
+        if (-not $bucket) { continue }
+        # Variants 是「只在这些变体注册」的白名单；-All 时忽略它
+        if (-not $All -and $bucket.Variants -and $Plan.Variant -notin @($bucket.Variants)) { continue }
+        [pscustomobject]@{ Name = $bucket.Name; Repo = [string]$bucket.Repo }
+    }
+}
+
+function Write-ArchiveManifest {
+    <#
+    .SYNOPSIS
+        把这次构建的「计划 vs 实际」写成 ARCHIVE.json，放进归档根目录。
+
+    .DESCRIPTION
+        归档本身是不透明的 7z，内网拿到它时无从知道里面装了什么、缺了什么。
+        ARCHIVE.json 记录变体、层、每层计划装的包、实际落在 $SCOOP\apps 下的包，
+        以及计划了但没装上的包（Optional 组失败会被跳过，只发 ::warning::）。
+
+        「实际」以 $SCOOP\apps\<name> 目录是否存在为准，而不是解析 `scoop list`：
+        目录就是随归档走的实体文件，也省掉解析表格的脆弱性。
+
+    .OUTPUTS
+        PSCustomObject — 写出的清单
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Plan,
+        [string]$Root = 'D:\00PackageManager'
+    )
+
+    $scoop = Join-Path $Root 'Scoop'
+    $installed = @(
+        Get-ChildItem (Join-Path $scoop 'apps') -Directory -ErrorAction Ignore |
+            ForEach-Object Name
+    )
+
+    $planned = [ordered]@{}
+    $missing = [System.Collections.Generic.List[string]]::new()
+    $plannedCount = 0
+    foreach ($layer in $Plan.Layers) {
+        $pkgs = @(Get-LayerPackages $Plan.Plan.Layers[$layer])
+        $planned[$layer] = $pkgs
+        $plannedCount += $pkgs.Count
+        foreach ($pkg in $pkgs) {
+            if ($installed -notcontains $pkg.Split('/')[-1]) { $missing.Add($pkg) }
+        }
+    }
+
+    $runUrl = $null
+    if ($env:GITHUB_SERVER_URL) {
+        $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+    }
+
+    # 构建过程中新增的持久 PATH 条目。manifest 里用 Add-Path 写死的目录不会随归档走
+    # （注册表不是文件），而且它不是 env_add_path，`scoop reset` 也不重建 ——
+    # go / uv / bun 都这么干，不处理的话还原后「装上了但用不了」。
+    #
+    # 用前后差集而不是解析 manifest：go 的 Add-Path 参数是 $bin_path 这种变量间接
+    # 引用（由 $env:GOPATH 推出），静态解析不出来。差集是动态的，全都能拿到。
+    $extraPath = [System.Collections.Generic.List[string]]::new()
+    $extraPathOutside = [System.Collections.Generic.List[string]]::new()
+    $baselineFile = Join-Path $env:RUNNER_TEMP 'path-baseline.txt'
+    if ($env:RUNNER_TEMP -and (Test-Path $baselineFile)) {
+        $before = @((Get-Content $baselineFile -Raw) -split ';' | Where-Object { $_.Trim() })
+        $after = @([Environment]::GetEnvironmentVariable('PATH', 'User') -split ';' | Where-Object { $_.Trim() })
+        foreach ($entry in $after) {
+            if ($before -contains $entry) { continue }
+            $full = $entry.TrimEnd('\')
+            if ($full.StartsWith($scoop, 'OrdinalIgnoreCase')) {
+                # 存相对 $SCOOP 的路径：归档可能被还原到别的根目录
+                $extraPath.Add($full.Substring($scoop.Length).TrimStart('\'))
+            } else {
+                $extraPathOutside.Add($full)
+            }
+        }
+    } else {
+        Write-Host "::warning title=缺少 PATH 基线::没找到 $baselineFile，无法采集 Add-Path 目录（应由 setup-scoop 写入）"
+    }
+
+    $manifest = [ordered]@{
+        variant          = $Plan.Variant
+        layers           = $Plan.Layers
+        builtAt          = (Get-Date).ToUniversalTime().ToString('o')
+        runId            = $env:GITHUB_RUN_ID
+        runUrl           = $runUrl
+        planned          = $planned
+        installed        = @($installed | Sort-Object)
+        missing          = @($missing)
+        extraPath        = @($extraPath)
+        extraPathOutside = @($extraPathOutside)
+    }
+
+    $path = Join-Path $Root 'ARCHIVE.json'
+    $manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $path -Encoding utf8
+    Write-Host "  已写入 $path（计划 $plannedCount 个包，$($installed.Count) 个已安装，缺 $($missing.Count) 个，额外 PATH 条目 $($extraPath.Count) 个）"
+
+    if ($missing.Count -gt 0) {
+        Write-Host "::warning title=归档缺包::$($missing.Count) 个计划内的包没有装上: $($missing -join ', ')"
+    }
+    if ($extraPathOutside.Count -gt 0) {
+        Write-Host "::warning title=PATH 条目在归档外::$($extraPathOutside -join ', ') —— 还原脚本无法重建，需手工处理"
+    }
+
+    [pscustomobject]$manifest
+}
+
+# 校验相关的函数（Test-BuildPlan / Invoke-PlanValidation / manifest lint）在
+# ValidateLib.ps1 —— 构建期用不到，不该让每个构建 step 都加载。

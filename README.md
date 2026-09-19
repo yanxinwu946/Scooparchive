@@ -35,7 +35,25 @@ Fork 本仓库 → 在 Actions 页面启用 Workflows → 手动触发 **Scoop A
 
 ### 2. 还原
 
-解压归档到目标路径（例：`D:\00PackageManager\`），然后以**管理员身份**运行 PowerShell：
+归档里自带 `restore.ps1` 和 `ARCHIVE.json`。解压到目标路径后，以**管理员身份**跑一条命令：
+
+```powershell
+D:\00PackageManager\restore.ps1
+```
+
+它依次做：设 `SCOOP` / `GOPATH` → 把归档内的目录追加进用户级 PATH（幂等）→
+`scoop reset *` + `scoop cleanup *` → 跑 `vcredist-aio` 装齐 VC++ 运行库。
+不想让它动系统组件就加 `-SkipNativeInstallers`。
+
+`ARCHIVE.json` 记录这个归档的变体、层、每层计划装的包、实际装了哪些、缺了哪些，以及
+构建期新增的持久 PATH 条目 —— 还原脚本读它来补 PATH。归档本身是不透明的 7z，没有这个
+文件，内网拿到它无从知道里面有什么。
+
+> 归档如果是从 Actions 下载的 `.zip`，需要解压两次——外层 zip，内层 `.7z`。
+
+#### 手工等价步骤
+
+`restore.ps1` 做的就是下面这些。不用它时（或要自己改造）以**管理员身份**运行 PowerShell：
 
 ```powershell
 [Environment]::SetEnvironmentVariable('SCOOP', 'D:\00PackageManager\Scoop', 'User')
@@ -64,17 +82,15 @@ scoop reset *
 scoop cleanup *
 ```
 
-还有两步装包时无法完成，需要还原后手动跑一次：
+还有一步装包时无法完成，需要还原后手动跑一次：
 
 ```powershell
-# 所有变体：VC++ 运行库合集（安装器写系统目录，归档覆盖不到）
-vcredist-aio
-
-# 仅 dev 变体：把 msys2 接进 ruby（gem install 带原生扩展的包需要）
+# 仅 dev 变体：把 msys2 接进 ruby（gem install 带原生扩展的包需要）。
+# 它要从 MSYS2 源下载包，离线环境跑不了，所以 restore.ps1 只提示不自动执行。
 ridk install 3
 ```
 
-> 归档如果是从 Actions 下载的 `.zip`，需要解压两次——外层 zip，内层 `.7z`。
+（`vcredist-aio` 不用手跑 —— 归档里的 `restore.ps1` 会做，除非加了 `-SkipNativeInstallers`。）
 
 **PATH 说明**：python / nodejs / pnpm 用 manifest 的 `env_add_path` 注册 PATH，
 `vcredist-aio`、AI Agents 等用 shim 落在 `Scoop\shims`。两者都由 `scoop reset *`
@@ -91,9 +107,12 @@ ridk install 3
 ```
 .github/
 ├── actions/setup-scoop/action.yml   ← Scoop 环境：安装 / bucket 注册 / aria2 配置
-├── scripts/layers.psd1              ← 变体 / 层 / 包清单（唯一事实来源）
-├── scripts/ScoopLib.ps1             ← 构建共享库
-└── workflows/scoop-archive.yml      ← 唯一入口（只做编排）
+├── scripts/layers.psd1              ← 变体 / 层 / 包清单 / bucket 表（唯一事实来源）
+├── scripts/ScoopLib.ps1             ← 构建：读计划 + 装包
+├── scripts/ValidateLib.ps1          ← 校验：读计划 + 静态 lint（不装任何包）
+├── scripts/restore.ps1              ← 还原脚本，随归档发布（不依赖上面任何一个）
+├── workflows/scoop-archive.yml      ← 构建入口（只做编排）
+└── workflows/validate.yml           ← 校验入口（秒级，push / PR 自动跑）
 requirements.txt                     ← Python 常用库清单（python 变体）
 ```
 
@@ -101,22 +120,50 @@ requirements.txt                     ← Python 常用库清单（python 变体�
 `nonportable` / `nerd-fonts` / `ktools`（第三方，渗透工具），外加 `codeql` / `python`
 变体才注册的 `r-bucket`。
 
-`ScoopLib.ps1` 是逻辑中心。GitHub Actions 的每个 step 是独立进程、函数不跨 step
-存活，所以共享逻辑必须落成文件、由每个 step 点源引入：
+GitHub Actions 的每个 step 是独立进程、函数不跨 step 存活，所以共享逻辑必须落成
+文件、由每个 step 点源引入：
 
 ```powershell
-. "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
+. "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"      # 构建
+. "$env:GITHUB_WORKSPACE\.github\scripts\ValidateLib.ps1"   # 校验（内部会点源 ScoopLib）
 ```
+
+两个库的分工是「装包」与「只读检查」，后者依赖前者（校验要读计划），反过来不行。
+
+**ScoopLib.ps1 —— 读计划 + 装包**
 
 | 函数 | 用途 |
 |---|---|
 | `Invoke-Native` | 运行原生命令并检查退出码（基元） |
 | `Invoke-ScoopRetry` | 装 scoop 包：整批快路径 → 失败降级逐包重试 |
 | `Get-BuildPlan` | 把变体展开成有序层列表（读 layers.psd1，校验未知变体/层） |
+| `Get-ScoopBucketList` | 取该变体要注册的 bucket（`-All` 忽略变体限制） |
 | `Install-ScoopLayer` | 装一个层：Early/Required fail-loud、Optional 告警，并处理 `Env` / `MkDir` / `Pin` |
 | `Add-ScoopBucket` | 幂等注册 bucket |
+| `Set-BuildEnv` | 设持久 + 进程环境变量（装包前生效） |
 | `Install-PipPackages` | 按 requirements.txt 安装 + 导出环境快照 |
-| `Write-BuildSummary` | 把构建计划写进 Step Summary（归档是不透明的 7z，至少让 run 页面留个记录） |
+| `Write-BuildSummary` | 把构建计划写进 Step Summary |
+| `Write-ArchiveManifest` | 写 ARCHIVE.json：计划 vs 实际、缺包、额外 PATH 条目 |
+
+**ValidateLib.ps1 —— 读计划 + 静态校验**
+
+| 函数 | 用途 |
+|---|---|
+| `Test-BuildPlan` | 校验包是否存在/有歧义，并 lint manifest（见下） |
+| `Test-VariantConsistency` | workflow 的 `options` 与 psd1 的 `Variants` 必须一一对应 |
+| `Invoke-PlanValidation` | 校验所有变体，出 Step Summary，返回是否有结构性错误 |
+| `Get-Manifest*` | manifest 解析辅助（脚本文本、depends/suggest、安装器名、bin 名） |
+
+`Test-BuildPlan` 查四类问题，**前两类是错误，后两类是提示**：
+
+| 检查 | 判据 | 级别 |
+|---|---|---|
+| 包不存在 / 名字打错 | 任何 bucket 里都没有 | 错误 |
+| 裸名有歧义 | 多个 bucket 都有同名 manifest | 错误 |
+| PATH 写到归档外 | 脚本里有 `Add-Path`（不是 `env_add_path`，`scoop reset` 不重建） | 警告 |
+| 装到系统目录 | 脚本里有 `RunAs`/`msiexec`/`is_admin`，或包名带 `-np` | 警告 |
+| 同一个包装了两遍 | 两个包的 `url` + `hash` 完全相同 | 警告 |
+| `depends` / `suggest` 不在计划里 | — | 提示 |
 
 ### 失败策略：哪些层 fail-loud，哪些跳过
 
@@ -149,6 +196,17 @@ requirements.txt                     ← Python 常用库清单（python 变体�
 - `workflow_dispatch` 的 `options:` 是静态列表，加变体必须同时改 workflow
 - 新层名要进 `Order`，否则不会被 `'*'` 展开；`base` 必须留在第一位，它的解包器是
   后续所有包的前提
+
+改完 **push 就会自动跑校验**（`.github/workflows/validate.yml`）：它把所有 bucket 浅克隆
+下来，逐个变体检查包是否存在、有没有歧义，并 lint manifest。所以加包的流程是：
+
+1. 改 `layers.psd1`
+2. push —— 校验 job 几秒到一两分钟给结果
+3. 通过了再手动触发 `Scoop Archive` 构建
+
+第 2 步替代了「跑几十分钟构建才发现包名打错」的循环。校验只读不装，和构建共用同一份
+`layers.psd1`，所以不会出现「校验说没问题但构建装不上」的情况 —— 除非是网络或上游
+manifest 变了。
 
 `Install-ScoopLayer` 还认三个可选字段：`Env`（装包前设持久环境变量）、`MkDir`（装包前
 建目录）、`Pin`（装完后按顺序 `scoop reset`，给写同一个变量的多个包定序 —— JDK 都写

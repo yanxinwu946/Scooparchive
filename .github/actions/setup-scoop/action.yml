@@ -24,6 +24,13 @@ runs:
         [Environment]::SetEnvironmentVariable('SCOOP', $env:SCOOP, 'Machine')
         Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 
+        # 记录安装前的持久 PATH 基线。Write-ArchiveManifest 拿它算差集，得到构建期间
+        # 新增的 PATH 条目 —— manifest 里用 Add-Path 写死的目录（go / uv / bun）不在
+        # 归档里、`scoop reset` 也不重建，必须记下来交给还原脚本。
+        # 必须早于 scoop 安装脚本，否则基线里已经混进 shims。
+        [Environment]::GetEnvironmentVariable('PATH', 'User') |
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP 'path-baseline.txt') -Encoding utf8
+
         # 先落盘再用子进程执行，退出码由 Invoke-Native 显式检查。
         #
         # 不用 `iwr | iex`：scoop 安装脚本按 $env:CI 决定失败行为
@@ -56,17 +63,11 @@ runs:
 
         Write-Section '注册 Scoop buckets'
 
-        Add-ScoopBucket -Name 'extras'
-        Add-ScoopBucket -Name 'versions'
-        Add-ScoopBucket -Name 'nirsoft'
-        Add-ScoopBucket -Name 'java'
-        Add-ScoopBucket -Name 'nonportable'
-        Add-ScoopBucket -Name 'nerd-fonts'
-        Add-ScoopBucket -Name 'ktools' -Repo 'https://github.com/kenyon-wong/ktools'
-
-        # r-bucket 仅 codeql / python 需要
-        if ('${{ inputs.variant }}' -in @('codeql', 'python')) {
-          Add-ScoopBucket -Name 'r-bucket' -Repo 'https://github.com/cderv/r-bucket.git'
+        # 清单在 layers.psd1 的 Buckets 表（main 由 scoop 自带，不在表里）。
+        # Get-ScoopBucketList 会跳过不属于当前变体的 bucket。
+        $plan = Get-BuildPlan -Variant '${{ inputs.variant }}'
+        foreach ($bucket in Get-ScoopBucketList -Plan $plan) {
+          Add-ScoopBucket -Name $bucket.Name -Repo $bucket.Repo
         }
 
     # 只装 base 层的 Early 组。它们要负责后续所有下载，而 aria2 的配置只有在
