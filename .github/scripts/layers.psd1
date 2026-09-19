@@ -122,9 +122,12 @@
             Title = '逆向工程与样本取证'
             Required = @(
                 # apktool / jadx 要的 java 由 jvm 层提供
-                'radare2', 'cutter', 'dnspy', 'ilspy',
+                # 用 dnspyex 不用 dnspy：后者的 manifest 自己写着不再维护、
+                # 建议改用 dnspyex（6.1.8 vs 6.6.0）。注意 dnspyex 只把
+                # dnSpy.Console.exe 声明成 bin，GUI 没有 shim（只能从 apps 目录起）
+                'radare2', 'cutter', 'dnspyex', 'ilspy',
                 'apktool', 'jadx',
-                # dnspy / ilspy 要的 .NET 运行时由 dotnet 层提供
+                # dnspyex / ilspy 要的 .NET 运行时由 dotnet 层提供
                 'x64dbg', 'pe-bear', 'openark',
                 'yara', 'exiftool', 'upx', 'uniextract2'
             )
