@@ -303,10 +303,12 @@ function Get-BuildPlan {
         }
     }
 
+    # 属性名刻意叫 LayerNames 而不是 Layers：raw psd1 数据里已经有 .Plan.Layers
+    # （层定义表），两者含义不同，同名会让人写错（曾经把 .Layers 当成定义表用）
     [pscustomobject]@{
-        Variant = $Variant
-        Layers  = $layers
-        Plan    = $plan
+        Variant    = $Variant
+        LayerNames = $layers
+        Plan       = $plan
     }
 }
 
@@ -325,20 +327,21 @@ function Install-ScoopLayer {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Layer,
-        $Plan,
-        [string]$PlanFile = $script:PlanFile,
+        [Parameter(Mandatory)]$Plan,
         [switch]$EarlyOnly
     )
 
-    if (-not $Plan) {
-        if (-not (Test-Path $PlanFile)) { throw "找不到层定义文件: $PlanFile" }
-        $Plan = Import-PowerShellDataFile -Path $PlanFile
+    # -Plan 要的是 Get-BuildPlan 的返回值。这里显式检查形状，否则传错东西会在
+    # 后面报「String 没有 ContainsKey」这种看不出所以然的错
+    if (-not $Plan.Plan -or -not $Plan.Plan.Layers) {
+        throw '-Plan 需要 Get-BuildPlan 的返回值（含 .Plan.Layers 层定义表）'
     }
-    if (-not $Plan.Layers.ContainsKey($Layer)) {
+    $definitions = $Plan.Plan.Layers
+    if (-not $definitions.ContainsKey($Layer)) {
         throw "未定义的层 '$Layer'（layers.psd1 的 Layers 里没有它）"
     }
 
-    $def = $Plan.Layers[$Layer]
+    $def = $definitions[$Layer]
     Write-Section "$Layer — $($def.Title)"
 
     # 持久环境变量必须在装包前生效：包的 installer script 可能读它
@@ -350,7 +353,9 @@ function Install-ScoopLayer {
 
     # 建目录同样要在装包前：包的 installer script 可能要往里写东西，
     # 也保证归档带得走这个空目录，还原后的 PATH 条目不悬空
-    foreach ($dir in @($def.MkDir)) {
+    # 过滤 $null：@($def.MkDir) 在没有 MkDir 的层上是 @($null)，展开成空串会让
+    # Test-Path 直接报错（和 Get-LayerPackages 里那个陷阱是同一个）
+    foreach ($dir in @($def.MkDir | Where-Object { $_ })) {
         $path = $ExecutionContext.InvokeCommand.ExpandString($dir)
         if (-not (Test-Path $path)) {
             New-Item -ItemType Directory -Force -Path $path | Out-Null
@@ -391,7 +396,7 @@ function Write-BuildSummary {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Plan)
 
-    $rows = foreach ($layer in $Plan.Layers) {
+    $rows = foreach ($layer in $Plan.LayerNames) {
         $def = $Plan.Plan.Layers[$layer]
         $count = @(Get-LayerPackages $def).Count
         "| ``$layer`` | $($def.Title) | $count |"
@@ -467,7 +472,7 @@ function Write-ArchiveManifest {
     $planned = [ordered]@{}
     $missing = [System.Collections.Generic.List[string]]::new()
     $plannedCount = 0
-    foreach ($layer in $Plan.Layers) {
+    foreach ($layer in $Plan.LayerNames) {
         $pkgs = @(Get-LayerPackages $Plan.Plan.Layers[$layer])
         $planned[$layer] = $pkgs
         $plannedCount += $pkgs.Count

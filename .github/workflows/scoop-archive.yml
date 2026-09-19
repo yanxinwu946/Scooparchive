@@ -56,9 +56,9 @@ jobs:
           . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
 
           $plan = Get-BuildPlan -Variant '${{ inputs.variant }}'
-          "layers=$($plan.Layers -join ',')" >> $env:GITHUB_OUTPUT
-          "has_codeql=$($plan.Layers -contains 'codeql')" >> $env:GITHUB_OUTPUT
-          "has_python=$($plan.Layers -contains 'python')" >> $env:GITHUB_OUTPUT
+          "layers=$($plan.LayerNames -join ',')" >> $env:GITHUB_OUTPUT
+          "has_codeql=$($plan.LayerNames -contains 'codeql')" >> $env:GITHUB_OUTPUT
+          "has_python=$($plan.LayerNames -contains 'python')" >> $env:GITHUB_OUTPUT
 
           # 归档产物是不透明的 7z，把「装了什么」留在 run 页面上
           Write-BuildSummary -Plan $plan
@@ -70,7 +70,7 @@ jobs:
           . "$env:GITHUB_WORKSPACE\.github\scripts\ScoopLib.ps1"
 
           $plan = Get-BuildPlan -Variant '${{ inputs.variant }}'
-          foreach ($layer in $plan.Layers) {
+          foreach ($layer in $plan.LayerNames) {
             Install-ScoopLayer -Layer $layer -Plan $plan
           }
 

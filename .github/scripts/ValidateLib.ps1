@@ -49,7 +49,7 @@ function Test-BuildPlan {
     $resolved = [ordered]@{}
     $seenInLayer = @{}
 
-    foreach ($layer in $Plan.Layers) {
+    foreach ($layer in $Plan.LayerNames) {
         foreach ($pkg in @(Get-LayerPackages $Plan.Plan.Layers[$layer])) {
             if ($seenInLayer.ContainsKey($pkg)) {
                 $warnings.Add("层间重复：'$pkg' 同时在 '$($seenInLayer[$pkg])' 和 '$layer'（叠加归档会重复装）")
@@ -221,7 +221,7 @@ function Invoke-PlanValidation {
         $buildPlan = Get-BuildPlan -Variant $variant -PlanFile $PlanFile
         $result = Test-BuildPlan -Plan $buildPlan -BucketRoot $BucketRoot
 
-        $summary.Add("| ``$variant`` | $($buildPlan.Layers -join ' + ') | $($result.Resolved.Count) | $($result.Errors.Count) | $($result.Warnings.Count) | $($result.Notes.Count) |")
+        $summary.Add("| ``$variant`` | $($buildPlan.LayerNames -join ' + ') | $($result.Resolved.Count) | $($result.Errors.Count) | $($result.Warnings.Count) | $($result.Notes.Count) |")
 
         foreach ($e in $result.Errors) {
             Write-Host "::error title=校验失败 [$variant]::$e"
